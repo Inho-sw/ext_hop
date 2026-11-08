@@ -26,7 +26,84 @@ env:
   OFFICIAL_BASE: https://github.com/golbin/hop/releases/download
 
 jobs:
+  # Rebuilds the vendored rhwp WASM (apps/studio-host/vendor/rhwp-core) from the pinned
+  # rhwp submodule with the toolchain recorded in PROVENANCE.json. The official artifact was
+  # built on macOS with CARGO_HOME=/Users/jin/.cargo (embedded in panic locations), so the
+  # same CARGO_HOME path is used to keep string lengths and data layout identical.
+  rhwp-wasm:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_HOME: /Users/jin/.cargo
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: Mirror official CARGO_HOME path
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /Users/jin
+          sudo chown "$(id -u):$(id -g)" /Users/jin
+          mkdir -p "$CARGO_HOME/bin"
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Install wasm-pack from crates.io
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./config/rhwp-upstream.json').wasmPackVersion")"
+          cd "$RUNNER_TEMP"
+          cargo install wasm-pack --version "$version" --locked
+          wasm-pack --version
+
+      - name: Build rhwp WASM
+        working-directory: third_party/rhwp
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc -vV
+          wasm-pack build --target web --out-dir "$RUNNER_TEMP/wasm" --release
+
+      - name: Compare with vendored artifacts
+        shell: bash
+        run: |
+          set -uo pipefail
+          vendor=apps/studio-host/vendor/rhwp-core
+          status=0
+          {
+            echo "### rhwp WASM on ${{ matrix.os }}"
+            echo '```'
+            for name in rhwp_bg.wasm rhwp.js rhwp.d.ts rhwp_bg.wasm.d.ts; do
+              expected="$(shasum -a 256 "$vendor/$name" | cut -d' ' -f1)"
+              actual="$(shasum -a 256 "$RUNNER_TEMP/wasm/$name" | cut -d' ' -f1)"
+              if [[ "$expected" == "$actual" ]]; then
+                echo "MATCH    $name $actual"
+              else
+                echo "MISMATCH $name vendored=$expected rebuilt=$actual"
+                echo "         sizes vendored=$(wc -c < "$vendor/$name") rebuilt=$(wc -c < "$RUNNER_TEMP/wasm/$name")"
+                status=1
+              fi
+            done
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Upload rebuilt WASM
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repro-rhwp-wasm-${{ matrix.os }}
+          path: ${{ runner.temp }}/wasm
+          retention-days: 14
+
   linux-x64:
+    if: ${{ !contains(github.event.head_commit.message, '[wasm-only]') }}
     runs-on: ubuntu-22.04
     env:
       SRC: /home/runner/work/hop/hop
@@ -105,6 +182,7 @@ jobs:
           retention-days: 14
 
   windows-x64:
+    if: ${{ !contains(github.event.head_commit.message, '[wasm-only]') }}
     runs-on: windows-2025
     env:
       SRC: D:\a\hop\hop
