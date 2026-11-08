@@ -1,0 +1,177 @@
+name: Reproducible build verification
+
+# Rebuilds the HOP desktop binary from this repository with the same runner image,
+# workspace path, and Rust toolchain as the official release, then compares it with
+# the official GitHub release asset. No signing secrets are used; nothing is published.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Official golbin/hop release tag to compare against
+        default: v0.4.5
+  push:
+    branches:
+      - claude/sleepy-ride-ptbi94
+    paths:
+      - .github/workflows/repro-verify.yml
+      - .github/repro/**
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "24"
+  RELEASE_TAG: ${{ inputs.release_tag || 'v0.4.5' }}
+  OFFICIAL_BASE: https://github.com/golbin/hop/releases/download
+
+jobs:
+  linux-x64:
+    runs-on: ubuntu-22.04
+    env:
+      SRC: /home/runner/work/hop/hop
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: Mirror official workspace path
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$SRC")"
+          cp -a "$GITHUB_WORKSPACE" "$SRC"
+
+      - name: Install Linux dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl file libayatana-appindicator3-dev \
+            libfuse2 libgtk-3-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev libxdo-dev \
+            patchelf rpm wget
+          gcc --version | head -n 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
+      - name: Pin Rust toolchain
+        working-directory: ${{ env.SRC }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain="$(node -p "require('./config/rhwp-upstream.json').rustToolchain")"
+          rustup toolchain install "$toolchain" --profile minimal --target x86_64-unknown-linux-gnu
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+
+      - name: Build
+        working-directory: ${{ env.SRC }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          pnpm install --frozen-lockfile
+          rustc -vV
+          cd apps/desktop
+          pnpm tauri build --bundles deb
+
+      - name: Compare with official release
+        working-directory: ${{ env.SRC }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          out="$RUNNER_TEMP/repro"
+          mkdir -p "$out/official" "$out/rebuilt"
+          curl -sSfL -o "$out/official.deb" "$OFFICIAL_BASE/$RELEASE_TAG/HOP-linux-x64.deb"
+          dpkg-deb -x "$out/official.deb" "$out/official"
+          deb="$(find apps/desktop/src-tauri/target/release/bundle/deb -name '*.deb' | head -n 1)"
+          dpkg-deb -x "$deb" "$out/rebuilt"
+          cp "$deb" "$out/rebuilt.deb"
+          python3 .github/repro/compare_binaries.py \
+            "$out/official/usr/bin/hop-desktop" "$out/rebuilt/usr/bin/hop-desktop" | tee "$out/report.txt"
+          echo "### Linux x64" >> "$GITHUB_STEP_SUMMARY"
+          { echo '```'; cat "$out/report.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload rebuilt artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repro-linux-x64
+          path: ${{ runner.temp }}/repro
+          retention-days: 14
+
+  windows-x64:
+    runs-on: windows-2025
+    env:
+      SRC: D:\a\hop\hop
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: Mirror official workspace path
+        shell: pwsh
+        run: |
+          git config --system core.longpaths true
+          robocopy $env:GITHUB_WORKSPACE $env:SRC /E /COPY:DAT /NFL /NDL /NJH /NJS
+          if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE }
+          exit 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
+      - name: Pin Rust toolchain
+        working-directory: ${{ env.SRC }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain="$(node -p "require('./config/rhwp-upstream.json').rustToolchain")"
+          rustup toolchain install "$toolchain" --profile minimal --target x86_64-pc-windows-msvc
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+
+      - name: Build
+        working-directory: ${{ env.SRC }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          pnpm install --frozen-lockfile
+          rustc -vV
+          cd apps/desktop
+          pnpm tauri build --bundles msi
+
+      - name: Compare with official release
+        working-directory: ${{ env.SRC }}
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'repro'
+          New-Item -ItemType Directory -Force -Path "$out\official", "$out\rebuilt" | Out-Null
+          Invoke-WebRequest -Uri "$env:OFFICIAL_BASE/$env:RELEASE_TAG/HOP-windows-x64.msi" -OutFile "$out\official.msi"
+          $msi = Get-ChildItem apps\desktop\src-tauri\target\release\bundle\msi\*.msi | Select-Object -First 1
+          Copy-Item $msi.FullName "$out\rebuilt.msi"
+          Start-Process msiexec -ArgumentList '/a', "`"$out\official.msi`"", '/qn', "TARGETDIR=`"$out\official`"" -Wait
+          Start-Process msiexec -ArgumentList '/a', "`"$out\rebuilt.msi`"", '/qn', "TARGETDIR=`"$out\rebuilt`"" -Wait
+          $off = Get-ChildItem -Recurse "$out\official" -Filter hop-desktop.exe | Select-Object -First 1
+          $reb = Get-ChildItem -Recurse "$out\rebuilt" -Filter hop-desktop.exe | Select-Object -First 1
+          python .github\repro\compare_binaries.py $off.FullName $reb.FullName | Tee-Object -FilePath "$out\report.txt"
+          Add-Content $env:GITHUB_STEP_SUMMARY "### Windows x64"
+          Add-Content $env:GITHUB_STEP_SUMMARY '```'
+          Get-Content "$out\report.txt" | Add-Content $env:GITHUB_STEP_SUMMARY
+          Add-Content $env:GITHUB_STEP_SUMMARY '```'
+          exit 0
+
+      - name: Upload rebuilt artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repro-windows-x64
+          path: ${{ runner.temp }}\repro
+          retention-days: 14
