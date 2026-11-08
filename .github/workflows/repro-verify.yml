@@ -75,7 +75,7 @@ jobs:
         run: |
           set -uo pipefail
           vendor=apps/studio-host/vendor/rhwp-core
-          status=0
+          report="$RUNNER_TEMP/wasm-report.txt"
           {
             echo "### rhwp WASM on ${{ matrix.os }}"
             echo '```'
@@ -87,12 +87,13 @@ jobs:
               else
                 echo "MISMATCH $name vendored=$expected rebuilt=$actual"
                 echo "         sizes vendored=$(wc -c < "$vendor/$name") rebuilt=$(wc -c < "$RUNNER_TEMP/wasm/$name")"
-                status=1
               fi
             done
             echo '```'
-          } | tee -a "$GITHUB_STEP_SUMMARY"
-          exit "$status"
+          } > "$report"
+          cat "$report" | tee -a "$GITHUB_STEP_SUMMARY"
+          # Fail the job (in this shell, not a pipeline subshell) when any artifact differs.
+          if grep -q '^MISMATCH' "$report"; then exit 1; fi
 
       - name: Upload rebuilt WASM
         if: always()
