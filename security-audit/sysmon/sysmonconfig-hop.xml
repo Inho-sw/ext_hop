@@ -1,0 +1,86 @@
+<!--
+  HOP 보안 감시용 최소 Sysmon 설정 (선택 사항).
+  격리된 점검 VM 에서만 쓰는 것을 전제로, 네트워크/DNS/프로세스는 전부 기록하고
+  파일 생성·레지스트리 변경은 HOP 와 WebView2 프로세스로 한정한다.
+  설치: Sysmon64.exe -accepteula -i sysmonconfig-hop.xml  (Enable-HopAuditLogging.ps1 이 자동 수행)
+-->
+<Sysmon schemaversion="4.90">
+  <HashAlgorithms>SHA256</HashAlgorithms>
+  <CheckRevocation>False</CheckRevocation>
+  <EventFiltering>
+    <!-- 1: 프로세스 생성 (전부) -->
+    <RuleGroup name="ProcessCreate" groupRelation="or">
+      <ProcessCreate onmatch="exclude" />
+    </RuleGroup>
+    <!-- 3: 네트워크 연결 (전부) -->
+    <RuleGroup name="NetworkConnect" groupRelation="or">
+      <NetworkConnect onmatch="exclude" />
+    </RuleGroup>
+    <!-- 22: DNS 질의 (전부, 질의한 프로세스가 기록됨) -->
+    <RuleGroup name="DnsQuery" groupRelation="or">
+      <DnsQuery onmatch="exclude" />
+    </RuleGroup>
+    <!-- 5: 프로세스 종료 (전부) -->
+    <RuleGroup name="ProcessTerminate" groupRelation="or">
+      <ProcessTerminate onmatch="exclude" />
+    </RuleGroup>
+    <!-- 11: 파일 생성 (HOP/WebView2 만) -->
+    <RuleGroup name="FileCreate" groupRelation="or">
+      <FileCreate onmatch="include">
+        <Image condition="end with">\hop-desktop.exe</Image>
+        <Image condition="end with">\msedgewebview2.exe</Image>
+      </FileCreate>
+    </RuleGroup>
+    <!-- 12/13/14: 레지스트리 (HOP/WebView2 만) -->
+    <RuleGroup name="Registry" groupRelation="or">
+      <RegistryEvent onmatch="include">
+        <Image condition="end with">\hop-desktop.exe</Image>
+        <Image condition="end with">\msedgewebview2.exe</Image>
+      </RegistryEvent>
+    </RuleGroup>
+    <!-- 원격 스레드 생성, WMI 영구 구독, 프로세스 변조: 전부 기록 (악성 행위 지표) -->
+    <RuleGroup name="CreateRemoteThread" groupRelation="or">
+      <CreateRemoteThread onmatch="exclude" />
+    </RuleGroup>
+    <RuleGroup name="WmiEvent" groupRelation="or">
+      <WmiEvent onmatch="exclude" />
+    </RuleGroup>
+    <RuleGroup name="ProcessTampering" groupRelation="or">
+      <ProcessTampering onmatch="exclude" />
+    </RuleGroup>
+    <!-- 나머지 이벤트 종류: 빈 include = 기록하지 않음 -->
+    <RuleGroup name="ImageLoad" groupRelation="or">
+      <ImageLoad onmatch="include" />
+    </RuleGroup>
+    <RuleGroup name="ProcessAccess" groupRelation="or">
+      <ProcessAccess onmatch="include" />
+    </RuleGroup>
+    <RuleGroup name="RawAccessRead" groupRelation="or">
+      <RawAccessRead onmatch="include" />
+    </RuleGroup>
+    <RuleGroup name="FileCreateTime" groupRelation="or">
+      <FileCreateTime onmatch="include" />
+    </RuleGroup>
+    <RuleGroup name="PipeEvent" groupRelation="or">
+      <PipeEvent onmatch="include" />
+    </RuleGroup>
+    <RuleGroup name="FileDelete" groupRelation="or">
+      <FileDelete onmatch="include" />
+    </RuleGroup>
+    <RuleGroup name="ClipboardChange" groupRelation="or">
+      <ClipboardChange onmatch="include" />
+    </RuleGroup>
+    <RuleGroup name="FileDeleteDetected" groupRelation="or">
+      <FileDeleteDetected onmatch="include" />
+    </RuleGroup>
+    <RuleGroup name="FileBlockExecutable" groupRelation="or">
+      <FileBlockExecutable onmatch="include" />
+    </RuleGroup>
+    <RuleGroup name="FileBlockShredding" groupRelation="or">
+      <FileBlockShredding onmatch="include" />
+    </RuleGroup>
+    <RuleGroup name="FileExecutableDetected" groupRelation="or">
+      <FileExecutableDetected onmatch="include" />
+    </RuleGroup>
+  </EventFiltering>
+</Sysmon>
